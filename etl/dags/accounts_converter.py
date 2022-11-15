@@ -235,29 +235,35 @@ def accounts_increment():
         query = f"select * from {table}_increment_{suffix}"
         postgres_hook = PostgresHook(postgres_conn_id="ton_db")
         df = postgres_hook.get_pandas_df(query)
-        if convert:
-            df['address'] = df.account.map(convert_addr)
         logging.info(f"Get results for {table} with shape {df.shape}")
-        buff = io.BytesIO()
-        df.to_parquet(buff)
-        file_size = buff.getbuffer().nbytes
-        logging.info(f"Dataframe converted to parquet, size: {file_size}")
-        buff.seek(0)
-        s3 = S3Hook('s3_conn')
+        if df.shape[0] == 0:
+            ti.xcom_push(key='rows_count', value=df.shape[0])
+            ti.xcom_push(key='file_size', value=0)
+            ti.xcom_push(key='file_url', value='')
+        else:
+            if convert:
+                df['address'] = df.account.map(convert_addr)
+            buff = io.BytesIO()
+            df.to_parquet(buff)
+            file_size = buff.getbuffer().nbytes
+            logging.info(f"Dataframe converted to parquet, size: {file_size}")
+            buff.seek(0)
+            s3 = S3Hook('s3_conn')
 
-        start_time = pendulum.parse(start_time)
-        file_path = f"dwh/staging/{table}/date={start_time.strftime('%Y%m')}/{start_time.strftime('%Y%m%d')}.parquet"
-        bucket = Variable.get('etl.ton.s3.bucket')
-        s3.load_file_obj(buff, key=file_path, bucket_name=bucket, replace=True)
-        ti.xcom_push(key='rows_count', value=df.shape[0])
-        ti.xcom_push(key='file_size', value=file_size)
-        ti.xcom_push(key='file_url', value=f"s3://{bucket}/{file_path}")
+            start_time = pendulum.parse(start_time)
+            file_path = f"dwh/staging/{table}/date={start_time.strftime('%Y%m')}/{start_time.strftime('%Y%m%d')}.parquet"
+            bucket = Variable.get('etl.ton.s3.bucket')
+            s3.load_file_obj(buff, key=file_path, bucket_name=bucket, replace=True)
+            ti.xcom_push(key='rows_count', value=df.shape[0])
+            ti.xcom_push(key='file_size', value=file_size)
+            ti.xcom_push(key='file_url', value=f"s3://{bucket}/{file_path}")
 
-    def convert_to_parquet_and_upload_task(table):
+    def convert_to_parquet_and_upload_task(table, convert=False):
         return PythonOperator(
             task_id=f'convert_{table}',
             python_callable=convert_to_parquet_and_upload,
             op_kwargs={
+                'convert': convert,
                 'table': table,
                 'suffix': '{{ run_id | sanitize_run_id }}',
                 'start_time': '{{ data_interval_start }}'
@@ -267,7 +273,7 @@ def accounts_increment():
     create_state_table >> drop_increment_table_initial >> create_increment_table >> generate_increment_accounts
     generate_increment_accounts >> generate_increment_transactions >> generate_increment_messages_1 >> generate_increment_messages_2
     convert_accounts = convert_to_parquet_and_upload_task("accounts")
-    convert_transactions = convert_to_parquet_and_upload_task("transactions")
+    convert_transactions = convert_to_parquet_and_upload_task("transactions", convert=True)
     convert_messages = convert_to_parquet_and_upload_task("messages")
     generate_increment_messages_2 >>\
         convert_accounts >> update_state ("accounts") >> \

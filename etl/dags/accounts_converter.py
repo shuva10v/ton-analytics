@@ -316,7 +316,11 @@ def accounts_increment():
     create_state_table >> drop_increment_table_initial >> create_increment_table >> generate_increment_accounts
     generate_increment_accounts >> generate_increment_transactions >> generate_increment_messages_1 >> generate_increment_messages_2
     convert_accounts = convert_to_parquet_and_upload_task("accounts")
-    convert_transactions = convert_to_parquet_and_upload_task("transactions", convert=True)
+    convert_transactions = convert_to_parquet_and_upload_task("transactions", convert=True,
+                                                              convert_to_int64=['compute_exit_code', 'compute_gas_used', 'compute_gas_limit',
+                                                                                'compute_gas_credit', 'compute_gas_fees', 'compute_vm_steps',
+                                                                                'action_result_code', 'action_total_fwd_fees', 'action_total_action_fees',
+                                                                                'masterchain_block_id'])
     convert_messages = convert_to_parquet_and_upload_task("messages", convert_to_int64=['op', 'import_fee', 'out_tx_id', 'in_tx_id'])
     generate_increment_messages_2 >>\
         convert_accounts >> update_state ("accounts") >> \

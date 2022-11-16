@@ -101,7 +101,7 @@ services:
     <<: *airflow-common
     command: webserver
     ports:
-      - 8080:8080
+      - 127.0.0.1:8080:8080
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 10s
@@ -277,3 +277,7 @@ services:
 
 volumes:
   postgres-db-volume:
+networks:
+  default:
+    name: ton-indexer_default
+    external: true

@@ -243,17 +243,38 @@ def accounts_increment():
         else:
             if convert:
                 df['address'] = df.account.map(convert_addr)
+            buffers = []
             buff = io.BytesIO()
             df.to_parquet(buff)
             file_size = buff.getbuffer().nbytes
-            logging.info(f"Dataframe converted to parquet, size: {file_size}")
-            buff.seek(0)
+            if file_size > 50000000:
+                logging.info(f"Parquet file is too large: {file_size}")
+                num_parts = file_size // 50000000 + 1
+                chunk_size = df.shape[0] // num_parts + 1
+                logging.info(f"Splitting df into {num_parts} parts {chunk_size} lines each")
+                file_size = 0
+                for i in range(num_parts):
+                    chunk = df[i * chunk_size:(i+1) * chunk_size]
+                    buff = io.BytesIO()
+                    chunk.to_parquet(buff)
+                    buffers.append(buff)
+                    chunk_file_size = buff.getbuffer().nbytes
+                    logging.info(f"New chunk #{i}: {chunk_file_size}")
+                    file_size += chunk_file_size
+            else:
+                file_size = buff.getbuffer().nbytes
+                buffers.append(buff)
+
+            logging.info(f"Dataframe converted to parquet, size: {file_size}, {len(buffers)} chunks")
             s3 = S3Hook('s3_conn')
 
             start_time = pendulum.parse(start_time)
-            file_path = f"dwh/staging/{table}/date={start_time.strftime('%Y%m')}/{start_time.strftime('%Y%m%d')}.parquet"
-            bucket = Variable.get('etl.ton.s3.bucket')
-            s3.load_file_obj(buff, key=file_path, bucket_name=bucket, replace=True)
+            for idx, buff in enumerate(buffers):
+                buff.seek(0)
+                suffix = "" if len(buffers) == 1 else f"_{idx}"
+                file_path = f"dwh/staging/{table}/date={start_time.strftime('%Y%m')}/{start_time.strftime('%Y%m%d')}{suffix}.parquet"
+                bucket = Variable.get('etl.ton.s3.bucket')
+                s3.load_file_obj(buff, key=file_path, bucket_name=bucket, replace=True)
             ti.xcom_push(key='rows_count', value=df.shape[0])
             ti.xcom_push(key='file_size', value=file_size)
             ti.xcom_push(key='file_url', value=f"s3://{bucket}/{file_path}")

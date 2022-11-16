@@ -164,7 +164,7 @@ def accounts_increment():
         sql="""
         insert into messages_increment_{{ run_id | sanitize_run_id }}
         select m.msg_id, source, destination, value, fwd_fee, ihr_fee, created_lt, m.hash, body_hash, op,
-            "comment", ihr_disabled, bounce, bounced, import_fee, out_tx_id, in_tx_id, 
+            "comment", ihr_disabled, bounce, bounced, import_fee, out_tx_id, in_tx_id,
             decode(mc.body, 'base64') as body, 
             t_in.utime as utime
         from messages m
@@ -235,10 +235,12 @@ def accounts_increment():
         addr = b'\x11' + tag + account_id
         return codecs.decode(codecs.encode(addr+calcCRC(addr), "base64"), "utf-8").strip()
 
-    def convert_to_parquet_and_upload(ti, table, suffix, start_time, convert=False):
+    def convert_to_parquet_and_upload(ti, table, suffix, start_time, convert=False, convert_to_int64=[]):
         query = f"select * from {table}_increment_{suffix}"
         postgres_hook = PostgresHook(postgres_conn_id="ton_db")
         df = postgres_hook.get_pandas_df(query)
+        for field in convert_to_int64:
+            df[field] = df[field].astype('Int64')
         logging.info(f"Get results for {table} with shape {df.shape}")
         if df.shape[0] == 0:
             ti.xcom_push(key='rows_count', value=df.shape[0])
@@ -251,20 +253,35 @@ def accounts_increment():
             buff = io.BytesIO()
             df.to_parquet(buff)
             file_size = buff.getbuffer().nbytes
-            if file_size > 50000000:
+            MAX_SIZE = 50000000
+            if file_size > MAX_SIZE:
+                del buff
                 logging.info(f"Parquet file is too large: {file_size}")
                 num_parts = file_size // 50000000 + 1
-                chunk_size = df.shape[0] // num_parts + 1
-                logging.info(f"Splitting df into {num_parts} parts {chunk_size} lines each")
-                file_size = 0
-                for i in range(num_parts):
-                    chunk = df[i * chunk_size:(i+1) * chunk_size]
-                    buff = io.BytesIO()
-                    chunk.to_parquet(buff)
-                    buffers.append(buff)
-                    chunk_file_size = buff.getbuffer().nbytes
-                    logging.info(f"New chunk #{i}: {chunk_file_size}")
-                    file_size += chunk_file_size
+                while True:
+                    buffers = []
+                    chunk_size = df.shape[0] // num_parts + 1
+                    logging.info(f"Splitting df into {num_parts} parts {chunk_size} lines each")
+                    file_size = 0
+                    finished = True
+                    for i in range(num_parts):
+                        chunk = df[i * chunk_size:(i+1) * chunk_size]
+                        buff = io.BytesIO()
+                        chunk.to_parquet(buff)
+                        buffers.append(buff)
+                        chunk_file_size = buff.getbuffer().nbytes
+                        logging.info(f"New chunk #{i}: {chunk_file_size}")
+                        if chunk_file_size > MAX_SIZE:
+                            num_parts += 1
+                            logging.info(f"Chunk over max size, increasing number of chunks: {num_parts}")
+                            del buff
+                            del chunk
+                            buffers = []
+                            finished = False
+                            break
+                        file_size += chunk_file_size
+                    if finished:
+                        break
             else:
                 file_size = buff.getbuffer().nbytes
                 buffers.append(buff)
@@ -283,13 +300,14 @@ def accounts_increment():
             ti.xcom_push(key='file_size', value=file_size)
             ti.xcom_push(key='file_url', value=f"s3://{bucket}/{file_path}")
 
-    def convert_to_parquet_and_upload_task(table, convert=False):
+    def convert_to_parquet_and_upload_task(table, convert=False, convert_to_int64=[]):
         return PythonOperator(
             task_id=f'convert_{table}',
             python_callable=convert_to_parquet_and_upload,
             op_kwargs={
                 'convert': convert,
                 'table': table,
+                'convert_to_int64': convert_to_int64,
                 'suffix': '{{ run_id | sanitize_run_id }}',
                 'start_time': '{{ data_interval_start }}'
             }
@@ -299,7 +317,7 @@ def accounts_increment():
     generate_increment_accounts >> generate_increment_transactions >> generate_increment_messages_1 >> generate_increment_messages_2
     convert_accounts = convert_to_parquet_and_upload_task("accounts")
     convert_transactions = convert_to_parquet_and_upload_task("transactions", convert=True)
-    convert_messages = convert_to_parquet_and_upload_task("messages")
+    convert_messages = convert_to_parquet_and_upload_task("messages", convert_to_int64=['op', 'import_fee', 'out_tx_id', 'in_tx_id'])
     generate_increment_messages_2 >>\
         convert_accounts >> update_state ("accounts") >> \
         convert_transactions >> update_state("transactions")  >> \

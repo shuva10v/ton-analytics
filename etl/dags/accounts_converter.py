@@ -131,7 +131,11 @@ def accounts_increment():
             """
         insert into accounts_increment_{{ run_id | sanitize_run_id }}
         select state_id, address, check_time, last_tx_lt, last_tx_hash, balance, code_hash,
-        decode(replace(replace(data, '_', '/'), '-', '+'), 'base64') as data
+        decode(replace(replace(
+          case
+            when length(data) % 4 != 0 then rpad(length(data) +  4 - length(data) % 4, '=')
+            else data
+          end, '_', '/'), '-', '+'), 'base64') as data
         from account_state
         where check_time >= {{ data_interval_start.int_timestamp }} and  check_time < {{ data_interval_end.int_timestamp }}
         """

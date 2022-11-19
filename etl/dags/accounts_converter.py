@@ -235,77 +235,93 @@ def accounts_increment():
         addr = b'\x11' + tag + account_id
         return codecs.decode(codecs.encode(addr+calcCRC(addr), "base64"), "utf-8").strip()
 
-    def convert_to_parquet_and_upload(ti, table, suffix, start_time, convert=False, convert_to_int64=[]):
-        query = f"select * from {table}_increment_{suffix}"
+    def convert_to_parquet_and_upload(ti, table, suffix, start_time, convert_address=False, convert_to_int64=[],
+                                      max_batch_size=1000000, sharding_key=None):
         postgres_hook = PostgresHook(postgres_conn_id="ton_db")
-        df = postgres_hook.get_pandas_df(query)
-        for field in convert_to_int64:
-            df[field] = df[field].astype('Int64')
-        logging.info(f"Get results for {table} with shape {df.shape}")
-        if df.shape[0] == 0:
-            ti.xcom_push(key='rows_count', value=df.shape[0])
-            ti.xcom_push(key='file_size', value=0)
-            ti.xcom_push(key='file_url', value='')
-        else:
-            if convert:
-                df['address'] = df.account.map(convert_addr)
-            buffers = []
-            buff = io.BytesIO()
-            df.to_parquet(buff)
-            file_size = buff.getbuffer().nbytes
-            MAX_SIZE = 50000000
-            if file_size > MAX_SIZE:
-                del buff
-                logging.info(f"Parquet file is too large: {file_size}")
-                num_parts = file_size // 50000000 + 1
-                while True:
-                    buffers = []
-                    chunk_size = df.shape[0] // num_parts + 1
-                    logging.info(f"Splitting df into {num_parts} parts {chunk_size} lines each")
-                    file_size = 0
-                    finished = True
-                    for i in range(num_parts):
-                        chunk = df[i * chunk_size:(i+1) * chunk_size]
-                        buff = io.BytesIO()
-                        chunk.to_parquet(buff)
-                        buffers.append(buff)
-                        chunk_file_size = buff.getbuffer().nbytes
-                        logging.info(f"New chunk #{i}: {chunk_file_size}")
-                        if chunk_file_size > MAX_SIZE:
-                            num_parts += 1
-                            logging.info(f"Chunk over max size, increasing number of chunks: {num_parts}")
-                            del buff
-                            del chunk
-                            buffers = []
-                            finished = False
-                            break
-                        file_size += chunk_file_size
-                    if finished:
-                        break
+        rows_count = postgres_hook.get_first(f"select count(1) as cnt from {table}_increment_{suffix}")[0]
+        logging.info(f"Total rows: {rows_count}")
+        bucket = Variable.get('etl.ton.s3.bucket')
+        total_file_size = 0
+        batches_count = 1
+        file_path = None
+        start_time = pendulum.parse(start_time)
+        s3 = S3Hook('s3_conn')
+
+        if rows_count > max_batch_size and sharding_key is not None:
+            batches_count += rows_count // max_batch_size
+        for batch_idx in range(batches_count):
+            if batches_count == 1:
+                query = f"select * from {table}_increment_{suffix}"
             else:
+                query = f"select * from {table}_increment_{suffix} where {sharding_key} % {batches_count} = {batch_idx}"
+            df = postgres_hook.get_pandas_df(query)
+            for field in convert_to_int64:
+                df[field] = df[field].astype('Int64')
+            logging.info(f"[{batch_idx}] Get results for {table} with shape {df.shape}")
+            if df.shape[0] == 0:
+                ti.xcom_push(key='rows_count', value=df.shape[0])
+                ti.xcom_push(key='file_size', value=0)
+                ti.xcom_push(key='file_url', value='')
+            else:
+                if convert_address:
+                    df['address'] = df.account.map(convert_addr)
+                buffers = []
+                buff = io.BytesIO()
+                df.to_parquet(buff)
                 file_size = buff.getbuffer().nbytes
-                buffers.append(buff)
+                MAX_SIZE = 50000000
+                if file_size > MAX_SIZE:
+                    del buff
+                    logging.info(f"Parquet file is too large: {file_size}")
+                    num_parts = file_size // 50000000 + 1
+                    while True:
+                        buffers = []
+                        chunk_size = df.shape[0] // num_parts + 1
+                        logging.info(f"Splitting df into {num_parts} parts {chunk_size} lines each")
+                        file_size = 0
+                        finished = True
+                        for i in range(num_parts):
+                            chunk = df[i * chunk_size:(i+1) * chunk_size]
+                            buff = io.BytesIO()
+                            chunk.to_parquet(buff)
+                            buffers.append(buff)
+                            chunk_file_size = buff.getbuffer().nbytes
+                            logging.info(f"New chunk #{i}: {chunk_file_size}")
+                            if chunk_file_size > MAX_SIZE:
+                                num_parts += 1
+                                logging.info(f"Chunk over max size, increasing number of chunks: {num_parts}")
+                                del buff
+                                del chunk
+                                buffers = []
+                                finished = False
+                                break
+                            file_size += chunk_file_size
+                        if finished:
+                            break
+                else:
+                    file_size = buff.getbuffer().nbytes
+                    buffers.append(buff)
+                total_file_size += file_size
 
-            logging.info(f"Dataframe converted to parquet, size: {file_size}, {len(buffers)} chunks")
-            s3 = S3Hook('s3_conn')
+                logging.info(f"Dataframe converted to parquet, size: {file_size}, {len(buffers)} chunks")
 
-            start_time = pendulum.parse(start_time)
-            for idx, buff in enumerate(buffers):
-                buff.seek(0)
-                suffix = "" if len(buffers) == 1 else f"_{idx}"
-                file_path = f"dwh/staging/{table}/date={start_time.strftime('%Y%m')}/{start_time.strftime('%Y%m%d')}{suffix}.parquet"
-                bucket = Variable.get('etl.ton.s3.bucket')
-                s3.load_file_obj(buff, key=file_path, bucket_name=bucket, replace=True)
-            ti.xcom_push(key='rows_count', value=df.shape[0])
-            ti.xcom_push(key='file_size', value=file_size)
-            ti.xcom_push(key='file_url', value=f"s3://{bucket}/{file_path}")
+                for idx, buff in enumerate(buffers):
+                    buff.seek(0)
+                    file_suffix = "" if batches_count == 1 else f"batch_{batch_idx}"
+                    file_suffix += "" if len(buffers) == 1 else f"_{idx}"
+                    file_path = f"dwh/staging/{table}/date={start_time.strftime('%Y%m')}/{start_time.strftime('%Y%m%d')}{file_suffix}.parquet"
+                    s3.load_file_obj(buff, key=file_path, bucket_name=bucket, replace=True)
+            ti.xcom_push(key='rows_count', value=rows_count)
+            ti.xcom_push(key='file_size', value=total_file_size)
+            ti.xcom_push(key='file_url', value=f"s3://{bucket}/{file_path}" if file_path is not None else None) # the last one
 
-    def convert_to_parquet_and_upload_task(table, convert=False, convert_to_int64=[]):
+    def convert_to_parquet_and_upload_task(table, convert_address=False, convert_to_int64=[], sharding_key=None):
         return PythonOperator(
             task_id=f'convert_{table}',
             python_callable=convert_to_parquet_and_upload,
             op_kwargs={
-                'convert': convert,
+                'sharding_key': sharding_key,
+                'convert_address': convert_address,
                 'table': table,
                 'convert_to_int64': convert_to_int64,
                 'suffix': '{{ run_id | sanitize_run_id }}',
@@ -316,12 +332,13 @@ def accounts_increment():
     create_state_table >> drop_increment_table_initial >> create_increment_table >> generate_increment_accounts
     generate_increment_accounts >> generate_increment_transactions >> generate_increment_messages_1 >> generate_increment_messages_2
     convert_accounts = convert_to_parquet_and_upload_task("accounts")
-    convert_transactions = convert_to_parquet_and_upload_task("transactions", convert=True,
+    convert_transactions = convert_to_parquet_and_upload_task("transactions", convert_address=True, sharding_key='tx_id',
                                                               convert_to_int64=['compute_exit_code', 'compute_gas_used', 'compute_gas_limit',
                                                                                 'compute_gas_credit', 'compute_gas_fees', 'compute_vm_steps',
                                                                                 'action_result_code', 'action_total_fwd_fees', 'action_total_action_fees',
                                                                                 'masterchain_block_id'])
-    convert_messages = convert_to_parquet_and_upload_task("messages", convert_to_int64=['op', 'import_fee', 'out_tx_id', 'in_tx_id'])
+    convert_messages = convert_to_parquet_and_upload_task("messages", sharding_key='msg_id',
+                                                          convert_to_int64=['op', 'import_fee', 'out_tx_id', 'in_tx_id'])
     generate_increment_messages_2 >>\
         convert_accounts >> update_state ("accounts") >> \
         convert_transactions >> update_state("transactions")  >> \

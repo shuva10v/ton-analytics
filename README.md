@@ -20,3 +20,7 @@ Datalake tables:
 | messages     | dwh/staging/messages/date=YYYYMM/     |
 
 After each incremental upload log entry created on psql table ``increment_state```
+
+## [Parsers](./parsers)
+
+Smart-contract data/messages parser for extracting meaningful data, for example, NFT owners.

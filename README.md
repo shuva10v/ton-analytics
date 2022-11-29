@@ -24,3 +24,8 @@ After each incremental upload log entry created on psql table ``increment_state`
 ## [Parsers](./parsers)
 
 Smart-contract data/messages parser for extracting meaningful data, for example, NFT owners.
+
+## Analysis
+
+Some analysis scripts:
+* [TON_events_plot.ipynb](analysis/TON_events_plot.ipynb) - plot gantt chart visualising TON scam (for [this research](https://telegra.ph/Analiz-skama-v-TON-11-25))

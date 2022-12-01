@@ -23,7 +23,22 @@ After each incremental upload log entry created on psql table ``increment_state`
 
 ## [Parsers](./parsers)
 
-Smart-contract data/messages parser for extracting meaningful data, for example, NFT owners.
+Smart-contract data/messages parser for extracting meaningful data, for example, NFT owners. Example:
+```shell
+POSTGRES_URI=postgres://postgres:pass@localhost:5432/ton_index \
+  python3 contracts_parser.py -c jetton -d cache/ -e http://localhost:9090/execute \
+  jetton_contract_data.csv jetton_parsed.csv
+```
+
+Supported contract types:
+* DNS contract ([TEP-81](https://github.com/ton-blockchain/TEPs/blob/master/text/0081-dns-standard.md))
+* Jetton master contract ([TEP-74](https://github.com/ton-blockchain/TEPs/blob/master/text/0074-jettons-standard.md))
+with [TEP-64](https://github.com/ton-blockchain/TEPs/blob/master/text/0064-token-data-standard.md) support
+
+## Utils
+
+* [contracts_executor](./utils/contracts_executor) - wrapper around [ton-contract-executor](https://github.com/ton-community/ton-contract-executor)
+for executing arbitrary get methods on contracts providing code and data cells. Used in parser to extract information.
 
 ## Analysis
 

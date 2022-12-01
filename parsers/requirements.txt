@@ -1,0 +1,5 @@
+requests    
+bitarray>=2.6.0
+psycopg2-binary
+tqdm
+git+https://github.com/toncenter/tvm_valuetypes.git

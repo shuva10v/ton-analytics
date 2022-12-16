@@ -7,7 +7,7 @@ const { Cell } = require("ton");
 const bodyParser = require('body-parser')
 const express = require('express');
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json({limit: '50mb'}));
 
 // TEP-64
 METADATA_KEYS = {
@@ -45,14 +45,24 @@ async function execute(req) {
         Cell.fromBoc(Buffer.from(req.code, 'base64'))[0],
         Cell.fromBoc(Buffer.from(req.data, 'base64'))[0]
     )
-    let res = await contract.invokeGetMethod(req.method, []);
+    let res;
+    try {
+      res = await contract.invokeGetMethod(req.method, []);
+    } catch (e) {
+      console.log("Unable to execute contract", e)
+      return {exit_code: -100};
+    }
     if (res.result.length != req.expected.length) {
       console.warn("wrong result size: " + res.result.length + ", expected " +
-        req.expected.length + " (" + req.expected + ")")
+        req.expected.length + " (" + req.expected)
     }
-    res.result = res.result.map((value, idx) => {
+    res.result = res.result.slice(0, req.expected.length).map((value, idx) => {
       if (req.expected[idx] == 'int') {
-        return value.toString(10);
+        try {
+          return value.toString(10);
+        } catch {
+          console.warn("Unable to parse int", value)
+        }
       } else if (req.expected[idx] == 'address') {
         try {
           return value.readAddress().toFriendly();

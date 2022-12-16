@@ -154,7 +154,7 @@ class JettonParser(Parser):
         """
         get_jetton_data_res = self.executor.execute(code_hash, cell, 'get_jetton_data',
                                                     ["int", "int", "address", "metadata", "cell_hash"])
-        if get_jetton_data_res is None:
+        if get_jetton_data_res is None or len(get_jetton_data_res) != 5:
             logging.error(f"Unable to get jetton data for {_id}")
             return None
         total_supply, mintable, admin_address, jetton_content, wallet_hash = get_jetton_data_res
@@ -170,7 +170,7 @@ class JettonParser(Parser):
                 try:
                     metadata = json.loads(metadata_json)
                 except Exception as e:
-                    logging.error(f"Failed to parse metadata for {metadata_url}", e)
+                    logging.error(f"Failed to parse metadata for {metadata_url}: {e}")
                     metadata = {}
                 metadata['content_layout'] = jetton_content['content_layout']
             else:
@@ -180,6 +180,42 @@ class JettonParser(Parser):
         return [metadata.get('name', None), metadata.get('symbol', None), metadata.get('image', None),
                 metadata.get('image_data', None), metadata.get('decimals', None), metadata_url, admin_address,
                 total_supply, mintable, wallet_hash, metadata.get('description', None)]
+
+
+"""
+TEP-74
+"""
+class JettonWalletParser(Parser):
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def parser_name():
+        return "jetton-wallet"
+
+    @staticmethod
+    def need_parse_boc():
+        return False
+
+    def header(self):
+        return ["balance", "owner", "jetton"]
+
+    def parse(self, cell, code_hash=None, _id=None):
+        """
+        TEP-74: get_wallet_data() returns (
+        int balance,
+        slice owner,
+        slice jetton,
+        cell jetton_wallet_code)
+        """
+        get_jetton_data_res = self.executor.execute(code_hash, cell, 'get_wallet_data',
+                                                    ["int", "address", "address", "cell_hash"])
+        if get_jetton_data_res is None:
+            logging.error(f"Unable to get jetton data for {_id}")
+            return None
+        balance, owner, jetton, _ = get_jetton_data_res
+
+        return [balance, owner, jetton]
 
 
 if __name__ == '__main__':
@@ -204,7 +240,7 @@ if __name__ == '__main__':
     assert len(header) > 1
     with open(args.destination, "w") as out, open(args.source) as src:
         csvreader = csv.reader(src)
-        csvwriter = csv.writer(out)
+        csvwriter = csv.writer(out, delimiter='\t')
         if not args.no_header:
             header_row = ['id']
             header_row.extend(header)

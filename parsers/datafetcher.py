@@ -29,11 +29,17 @@ class RemoteDataFetcher:
         return result
 
     def __fetch(self, url):
+        logging.debug(f"Fetching {url}")
         parsed_url = urlparse(url)
         if parsed_url.scheme == 'ipfs':
             assert len(parsed_url.path) == 0, parsed_url
             return requests.get(self.ipfs_gateway + parsed_url.netloc).content
+        elif parsed_url.scheme is None or len(parsed_url.scheme) == 0:
+            logging.error(f"No schema for URL: {url}")
+            return None
         else:
+            if parsed_url.netloc == 'localhost':
+                return None
             retry = 0
             while retry < 5:
                 try:
